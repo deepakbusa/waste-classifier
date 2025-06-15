@@ -3,65 +3,60 @@ from PIL import Image
 import torch
 import cv2
 
-# Load model and processor
+# Load model
 model_name = "prithivMLmods/Recycling-Net-11"
 processor = AutoImageProcessor.from_pretrained(model_name)
 model = SiglipForImageClassification.from_pretrained(model_name)
 
-# Labels
-recyclable_labels = ["cardboard", "glass", "metal", "paper", "plastic", "can", "carton"]
-non_recyclable_labels = ["food waste", "trash", "garbage", "organic"]
+# Get official model classes
 id2label = model.config.id2label
+valid_labels = set(label.lower() for label in id2label.values())
 
-# Flask App
-from flask import Flask, Response
-app = Flask(__name__)
+# Mapping to two categories
+recyclable_labels = {"cardboard", "glass", "metal", "paper", "plastic", "can", "carton"}
+non_recyclable_labels = {"food waste", "trash", "organic", "garbage"}
 
 def classify_frame(frame):
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     inputs = processor(images=img, return_tensors="pt")
     with torch.no_grad():
         logits = model(**inputs).logits
-        probs = torch.nn.functional.softmax(logits, dim=1).squeeze().tolist()
+        probs = torch.nn.functional.softmax(logits, dim=1).squeeze()
 
-    pred_idx = max(range(len(probs)), key=lambda i: probs[i])
+    pred_idx = torch.argmax(probs).item()
     pred_label = id2label[pred_idx].lower()
-    if any(word in pred_label for word in recyclable_labels):
-        return "Recyclable", probs[pred_idx]
+    confidence = probs[pred_idx].item()
+
+    # Only use known labels
+    if pred_label not in valid_labels:
+        return "Unknown", confidence
+
+    # Main classification
+    if pred_label in recyclable_labels:
+        return "Recyclable", confidence
     else:
-        return "Non-Recyclable", probs[pred_idx]
+        return "Non-Recyclable", confidence
 
-def generate():
-    cap = cv2.VideoCapture(0)
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
-        label, confidence = classify_frame(frame)
-        text = f"{label} ({confidence*100:.1f}%)"
-        color = (0, 255, 0) if label == "Recyclable" else (0, 0, 255)
-        cv2.putText(frame, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+# Webcam loop
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("❌ Could not open webcam.")
+    exit()
 
-@app.route('/')
-def index():
-    return """
-    <html>
-        <head><title>Live Waste Classifier</title></head>
-        <body>
-            <h2>Live Waste Classifier (Recyclable / Non-Recyclable)</h2>
-            <img src="/video_feed">
-        </body>
-    </html>
-    """
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+    label, confidence = classify_frame(frame)
+    text = f"{label} ({confidence*100:.1f}%)"
+    color = (0, 255, 0) if "Recyclable" in label else (0, 0, 255)
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=7860)
+    cv2.putText(frame, text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+    cv2.imshow("Live Waste Classification", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
