@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: waste-classifier
-    env: python
-    plan: free
-    buildCommand: ""
-    startCommand: "python app.py"
-    runtime: python
-    region: oregon
